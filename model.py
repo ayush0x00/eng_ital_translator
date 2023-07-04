@@ -30,40 +30,124 @@ class PositionalEncoding(nn.Module):
             torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
         )
 
-        #apply sin to even pos and cos to odd pos
-        positional_encoding[:,0::2] = torch.sin(pos*div_term)
-        positional_encoding[:,1::2] = torch.cos(pos*div_term)
+        # apply sin to even pos and cos to odd pos
+        positional_encoding[:, 0::2] = torch.sin(pos * div_term)
+        positional_encoding[:, 1::2] = torch.cos(pos * div_term)
 
         # adding batch dim
         positional_encoding = positional_encoding.unsqueeze(0)
 
-        self.register_buffer('pe',positional_encoding)
-    
-    def forward(self,x): # pe have batch size as the first dim. (1,seq_len,d_model)
-        x = x + (self.positional_encoding[:,:x.shape[1],:]).requires_grad(False)
+        self.register_buffer("pe", positional_encoding)
+
+    def forward(self, x):  # pe have batch size as the first dim. (1,seq_len,d_model)
+        x = x + (self.positional_encoding[:, : x.shape[1], :]).requires_grad(False)
         return self.dropout(x)
 
+
 class LayerNormalization(nn.Module):
-    def __init__(self, eps:float = 10**-6) -> None:
+    def __init__(self, eps: float = 10**-6) -> None:
         super().__init__()
         self.eps = eps
-        self.alpha=nn.Parameter(torch.ones(1)) # multiplied while layer normalizing
-        self.beta=nn.Parameter(torch.zeros(1)) # added while layer normalizing
+        self.alpha = nn.Parameter(torch.ones(1))  # multiplied while layer normalizing
+        self.beta = nn.Parameter(torch.zeros(1))  # added while layer normalizing
 
-    def forward(self,x):
-        mean = x.mean(dim=-1,keepdim=True)
-        std = x.std(dim=-1,keepdim=True)
-        return self.alpha * (x-mean)/(std+self.eps) + self.beta
-    
+    def forward(self, x):
+        mean = x.mean(dim=-1, keepdim=True)
+        std = x.std(dim=-1, keepdim=True)
+        return self.alpha * (x - mean) / (std + self.eps) + self.beta
+
+
 class FeedForward(nn.Module):
-    def __init__(self,d_model:int,d_ff:int,dropout:float ) -> None:
+    def __init__(self, d_model: int, d_ff: int, dropout: float) -> None:
         super().__init__()
         # IP and OP both dim are (1,seq_len,d_model)
         # inner layer dim is (1,seq_len,d_ff)
-        self.linear1 = nn.Linear(d_model,d_ff)
-        self.linear2=nn.Linear(d_ff,d_model)
+        self.linear1 = nn.Linear(d_model, d_ff)
+        self.linear2 = nn.Linear(d_ff, d_model)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self,x):
+    def forward(self, x):
         return self.linear2(self.dropout(torch.relu(self.linear1(x))))
-    
+
+
+class MulthiHeadAttention(nn.Module):
+    def __init__(self, d_model: int, h: int, dropout: float) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.h = h
+        assert d_model % h == 0, "Head not divisible"
+        self.d_k = d_model // h
+
+        self.w_q = nn.Linear(d_model, d_model)
+        self.w_k = nn.Linear(d_model, d_model)
+        self.w_v = nn.Linear(d_model, d_model)
+
+        self.w_o = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    @staticmethod
+    def attention(query, key, value, mask, dropout: nn.Dropout):
+        d_k = query.shape[-1]
+
+        attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(
+            d_k
+        )  # (batch,h,seq_len,seq_len)
+
+        # apply mask before softmax
+
+        if mask is not None:
+            attention_scores.masked_fill(mask == 0, -1e9)
+        attention_scores = attention_scores.softmax(dim=-1)  # (batch,h,seq_len,seq_len)
+        if dropout is not None:
+            attention_scores = dropout(attention_scores)
+
+        return (attention_scores @ value), attention_scores
+
+    def forward(self, q, k, v, mask):
+        # before applying softmax , we mask the values close to 0. Then we apply softmax and multiply it with V
+        # to get attention score
+
+        query = self.w_q(
+            q
+        )  # (batch,seq_len,d_model)---> (batch,seq_len,d_model), basically Q'
+        key = self.w_k(
+            k
+        )  # (batch,seq_len,d_model)---> (batch,seq_len,d_model), basically K'
+        value = self.v(
+            v
+        )  # (batch,seq_len,d_model)---> (batch,seq_len,d_model), basically V'
+
+        # divide query, key, value into smaller matrices for different heads
+
+        # we want each head to see the full sequence so we have to take transpose
+        # (batch,seq_len,d_model)-->(batch,seq_len,h,d_k)--->(batch,h,seq_len,d_k)
+        query = query.view(query.shape[0], query.shape[1], self.h, self.d_k).transpose(
+            1, 2
+        )
+        key = key.view(key.shape[0], key.shape[1], self.h, self.d_k).transpose(1, 2)
+        value = value.view(value.shape[0], value.shape[1], self.h, self.d_k).transpose(
+            1, 2
+        )
+
+        x, self.attention_score = MulthiHeadAttention.attention(
+            query, key, value, mask, self.dropout
+        )
+        # (batch,h,seq_len,d_k) ---> #(batch,seq_len,h,d_k) --> #(batch,seq_len,d_model)
+        # refer here for use of contiguous https://stackoverflow.com/questions/48915810/what-does-contiguous-do-in-pytorch
+        x = (
+            x.transpose(1, 2)
+            .contiguous()
+            .view(x.shape[0], x.shape[1], self.h * self.d_k)
+        )
+
+        return self.w_o(x)
+
+
+class ResidualConnection(nn.Module):
+    def __init(self, dropout: float) -> None:
+        super().__init__()
+        self.dropout=dropout
+        self.norm=LayerNormalization()
+
+    def forward(self,x,sublayer):
+        return x+self.dropout(sublayer(self.norm(x)))
