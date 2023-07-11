@@ -67,7 +67,7 @@ class BilingualDataset(Dataset):
             ]
         )
 
-        #output of the decoder
+        # output of the decoder
         label = torch.cat(
             [
                 torch.tensor(dec_input_tokens, dtype=torch.int64),
@@ -83,15 +83,25 @@ class BilingualDataset(Dataset):
         assert label.size(0) == self.seq_len
 
         return {
-            "encoder_input":encoder_input,
-            "decoder_input":decoder_input,
-            "encoder_mask":(encoder_input != self.pad_token).unsqueeze(0).unsqueeze(0).int(), # (1,1,seq_len)
-            "decoder_mask":(decoder_input != self.pad_token).unsqueeze(0).unsqueeze(0).int() & causal_mask(decoder_input.size(0)), # (1,seq_len,seq_len)
-            "label":label, #(seq_len)
-            "src_text":src_text,
-            "tgt_text":tgt_text
+            "encoder_input": encoder_input,
+            "decoder_input": decoder_input,
+            "encoder_mask": (encoder_input != self.pad_token)
+            .unsqueeze(0)
+            .unsqueeze(0)
+            .int(),  # (1,1,seq_len)
+            "decoder_mask": (decoder_input != self.pad_token)
+            .unsqueeze(0)
+            .unsqueeze(0)
+            .int()
+            & causal_mask(decoder_input.size(0)),  # (1,seq_len,seq_len)
+            "label": label,  # (seq_len)
+            "src_text": src_text,
+            "tgt_text": tgt_text,
         }
-    
+
+
 def causal_mask(size):
-    mask = torch.triu(torch.ones(1,size,size),diagonal=1).type(torch.int)
-    return mask == 0 # mask the upper triangular values so that a word can see dependecnies only from the past
+    mask = torch.triu(torch.ones(1, size, size), diagonal=1).type(torch.int)
+    return (
+        mask == 0
+    )  # mask the upper triangular values so that a word can see dependecnies only from the past
